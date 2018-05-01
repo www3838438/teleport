@@ -1238,19 +1238,42 @@ func (a *AuditTestSuite) TestForwardAndUpload(c *check.C) {
 	c.Assert(err, check.IsNil)
 	c.Assert(history, check.HasLen, 3)
 
-	// make sure offsets were properly set (0 for the first event and 5 bytes for hello):
-	c.Assert(history[1][SessionByteOffset], check.Equals, float64(0))
-	c.Assert(history[1][SessionEventTimestamp], check.Equals, float64(0))
+	// trigger several parallel downloads, they should not fail
+	iterations := 50
+	resultsC := make(chan struct{}, iterations)
+	for i := 0; i < iterations; i++ {
+		go func() {
+			defer func() {
+				resultsC <- struct{}{}
+			}()
+			history, err := alog.GetSessionEvents(defaults.Namespace, session.ID(sessionID), 0, true)
+			c.Assert(err, check.IsNil)
+			c.Assert(history, check.HasLen, 3)
 
-	// fetch all bytes
-	buff, err := alog.GetSessionChunk(defaults.Namespace, session.ID(sessionID), 0, 5000)
-	c.Assert(err, check.IsNil)
-	c.Assert(string(buff), check.Equals, string(firstMessage))
+			// make sure offsets were properly set (0 for the first event and 5 bytes for hello):
+			c.Assert(history[1][SessionByteOffset], check.Equals, float64(0))
+			c.Assert(history[1][SessionEventTimestamp], check.Equals, float64(0))
 
-	// with offset
-	buff, err = alog.GetSessionChunk(defaults.Namespace, session.ID(sessionID), 2, 5000)
-	c.Assert(err, check.IsNil)
-	c.Assert(string(buff), check.Equals, string(firstMessage[2:]))
+			// fetch all bytes
+			buff, err := alog.GetSessionChunk(defaults.Namespace, session.ID(sessionID), 0, 5000)
+			c.Assert(err, check.IsNil)
+			c.Assert(string(buff), check.Equals, string(firstMessage))
+
+			// with offset
+			buff, err = alog.GetSessionChunk(defaults.Namespace, session.ID(sessionID), 2, 5000)
+			c.Assert(err, check.IsNil)
+			c.Assert(string(buff), check.Equals, string(firstMessage[2:]))
+		}()
+	}
+
+	timeout := time.After(time.Second)
+	for i := 0; i < iterations; i++ {
+		select {
+		case <-resultsC:
+		case <-timeout:
+			c.Fatalf("timeout waiting for goroutines to finish")
+		}
+	}
 }
 
 func marshal(f EventFields) []byte {
